@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Mojsaic</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; overflow: hidden;
+    background: #000; color: #fff;
+    font: 14px/1.5 -apple-system, "Helvetica Neue", sans-serif;
+    user-select: none; -webkit-user-select: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    touch-action: none;
+  }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; }
+  /* selectable emoji overlay, shown only when the view is settled; its
+     geometry mirrors stampCell in mosaic px, placed by one transform */
+  #txt {
+    position: absolute; left: 0; top: 0;
+    transform-origin: 0 0;
+    touch-action: none;
+    opacity: 0; transition: opacity .15s;
+    pointer-events: none;
+  }
+  #txt.on {
+    opacity: 1; pointer-events: auto;
+    cursor: text;
+    user-select: text; -webkit-user-select: text;
+  }
+  #txt .r { position: absolute; white-space: pre; }
+  #txt span {
+    display: inline-block; text-align: center;
+    transform: translateY(5%); /* stampCell's baseline nudge */
+  }
+  #txt ::selection { background: rgba(91, 200, 255, .4); }
+  #map {
+    position: fixed; right: 1.5rem; top: 1.25rem;
+    border: 2px solid rgba(255,255,255,.18); border-radius: 10px;
+    overflow: hidden; cursor: move;
+    background: rgba(20, 21, 26, .55);
+    backdrop-filter: blur(18px) saturate(1.4);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    display: none; touch-action: none;
+    transition: opacity .4s;
+  }
+  #map.show { display: block; }
+  #mapimg { position: absolute; }
+  /* controls stay out of the way until the mosaic has fully settled
+     (initial intro or a freshly dropped image) */
+  body.unsettled #hud, body.unsettled #map { opacity: 0; pointer-events: none; }
+  #mapbox {
+    position: absolute; border: 1.5px solid #fff; border-radius: 2px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,.45);
+    pointer-events: none;
+  }
+  #brand {
+    position: fixed; top: 1.25rem; left: 1.5rem;
+    font-size: .8rem; letter-spacing: .35em; text-transform: uppercase;
+    color: #fff; pointer-events: none;
+    text-shadow: 0 1px 8px rgba(0,0,0,.8);
+  }
+  #brand strong { color: #fff; font-weight: 600; }
+  #hud {
+    position: fixed; left: 50%; bottom: 1.75rem; transform: translateX(-50%);
+    display: flex; gap: 2.5rem; align-items: center;
+    padding: 1rem 1.75rem;
+    background: rgba(20, 21, 26, .55);
+    border: 2px solid rgba(255,255,255,.12);
+    border-radius: 18px;
+    backdrop-filter: blur(18px) saturate(1.4);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    box-shadow: 0 12px 40px rgba(0,0,0,.55);
+    transition: opacity .4s;
+  }
+  .ctl { display: flex; flex-direction: column; gap: .45rem; min-width: 190px; }
+  .ctl label {
+    font-size: .68rem; letter-spacing: .18em; text-transform: uppercase;
+    color: #fff;
+  }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 4px; border-radius: 2px; outline: none;
+    background: linear-gradient(90deg, #ff5b5b, #ffd75b, #5bff8a, #5bc8ff, #b45bff);
+    opacity: .9;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; border: none;
+    box-shadow: 0 0 0 4px rgba(255,255,255,.18), 0 2px 10px rgba(0,0,0,.6);
+    cursor: pointer; transition: transform .12s;
+  }
+  input[type=range]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+  input[type=range]::-moz-range-thumb {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; border: none;
+    box-shadow: 0 0 0 4px rgba(255,255,255,.18), 0 2px 10px rgba(0,0,0,.6);
+    cursor: pointer;
+  }
+  #hint {
+    position: fixed; right: 1.5rem; top: 1.25rem;
+    font-size: .72rem; color: #fff; pointer-events: none;
+    text-shadow: 0 1px 8px rgba(0,0,0,.8);
+  }
+  #dropnote {
+    position: fixed; top: 1.25rem; left: 50%; transform: translateX(-50%);
+    padding: .55rem 1.1rem;
+    background: rgba(20, 21, 26, .55);
+    backdrop-filter: blur(18px) saturate(1.4);
+    -webkit-backdrop-filter: blur(18px) saturate(1.4);
+    border: 1.5px dotted rgba(255,255,255,.4);
+    border-radius: 12px;
+    font-size: .72rem; letter-spacing: .18em; text-transform: uppercase;
+    white-space: nowrap;
+    color: #fff; pointer-events: none;
+    text-shadow: 0 1px 8px rgba(0,0,0,.8);
+    opacity: 0; transition: opacity .6s;
+  }
+  #dropnote.show { opacity: 1; }
+  #dropnote .mob { display: none; }
+  /* touch devices: bigger targets, full-width HUD; pan by drag, so the
+     mini-map isn't needed */
+  @media (pointer: coarse), (max-width: 640px) {
+    #stage { cursor: grab; }
+    #map, #hint { display: none !important; }
+    /* no drag & drop on touch: the note becomes a photo picker */
+    #dropnote.show { pointer-events: auto; cursor: pointer; }
+    #dropnote .desk { display: none; }
+    #dropnote .mob { display: inline; }
+    #hud {
+      left: 1rem; right: 1rem; bottom: max(1rem, env(safe-area-inset-bottom));
+      transform: none;
+      gap: 1.25rem; padding: 1.1rem 1.25rem;
+    }
+    .ctl { min-width: 0; flex: 1; }
+    input[type=range] { height: 10px; border-radius: 5px; }
+    input[type=range]::-webkit-slider-thumb { width: 32px; height: 32px; }
+    input[type=range]::-moz-range-thumb { width: 32px; height: 32px; }
+  }
+</style>
+</head>
+<body class="unsettled">
+<div id="stage"><canvas id="gl"></canvas><div id="txt"></div></div>
+<div id="map"><canvas id="mapimg"></canvas><div id="mapbox"></div></div>
+<div id="dropnote"><span class="desk">drop an image for a custom mojsaic</span><span class="mob">📁 add photo for custom mojsaic</span></div>
+<input type="file" id="file" accept="image/*" hidden>
+<div id="hud">
+  <div class="ctl">
+    <label>Emoji count</label>
+    <input type="range" id="width" min="20" max="200" value="110">
+  </div>
+  <div class="ctl">
+    <label>Zoom</label>
+    <input type="range" id="size" min="4" max="60" value="40">
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// ------------------------------------------------ emoji palette
+const EMOJI_LIB = [
+  ["❤️", 230, 30, 40], ["🍎", 220, 40, 50], ["🍒", 190, 20, 60], ["🌹", 200, 30, 45],
+  ["🔥", 250, 120, 30], ["🧡", 245, 140, 30], ["🍊", 250, 160, 40], ["🥕", 240, 140, 60],
+  ["🍑", 250, 190, 140], ["💛", 250, 210, 40], ["🍋", 240, 220, 60], ["🌻", 250, 200, 50],
+  ["🌽", 245, 215, 90], ["⭐", 250, 210, 80],
+  ["💚", 40, 180, 70], ["🍏", 130, 200, 80], ["🥬", 100, 190, 90], ["🌳", 60, 140, 60],
+  ["🥦", 40, 110, 50],
+  ["🩵", 120, 200, 240], ["💧", 80, 160, 240], ["🌊", 60, 140, 210], ["💙", 40, 110, 230],
+  ["🫐", 80, 90, 180],
+  ["💜", 150, 80, 220], ["🍇", 130, 60, 160], ["🍆", 90, 50, 130],
+  ["🌸", 250, 180, 220], ["🩷", 250, 150, 190],
+  ["🤍", 245, 245, 245], ["☁️", 235, 240, 245],
+  ["🤎", 140, 90, 60], ["🍫", 110, 70, 50],
+  ["🩶", 150, 155, 160], ["🪨", 130, 130, 135], ["🖤", 40, 40, 45],
+];
+
+function pickEmoji(r, g, b) {
+  const q = v => Math.round(v / 63.75) * 63.75;
+  const qr = q(r), qg = q(g), qb = q(b);
+  let best = EMOJI_LIB[0], bestD = Infinity;
+  for (const e of EMOJI_LIB) {
+    const dr = qr - e[1], dg = qg - e[2], db = qb - e[3];
+    const d = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return best[0];
+}
+
+// ------------------------------------------------ WebGL display
+// The mosaic renders to an offscreen 2D canvas; a fullscreen shader
+// displays it with pan/zoom as uniforms plus a fisheye term that GSAP
+// pulses on zoom (positive bulges the center, negative the corners).
+const $ = id => document.getElementById(id);
+const stage = $("stage"), glCanvas = $("gl");
+const txt = $("txt"), map = $("map"), mapimg = $("mapimg"), mapbox = $("mapbox");
+const gl = glCanvas.getContext("webgl2") || glCanvas.getContext("webgl");
+const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+
+const VERT = `
+attribute vec2 aPos;
+void main() { gl_Position = vec4(aPos, 0.0, 1.0); }
+`;
+const FRAG = `
+precision mediump float;
+uniform vec2 uRes;      // viewport, device px
+uniform vec2 uT;        // pan translate, device px
+uniform float uS;       // device px per mosaic px
+uniform vec2 uTexSize;  // mosaic px
+uniform float uK;       // fisheye strength
+uniform sampler2D uTex;
+void main() {
+  vec2 p = vec2(gl_FragCoord.x, uRes.y - gl_FragCoord.y);
+  vec2 c = uRes * 0.5;
+  vec2 d = p - c;
+  float r = length(d) / length(c);
+  vec2 pd = c + d * (1.0 + uK * (r * r - 1.0));
+  vec2 uv = (pd - uT) / uS / uTexSize;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+    gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+  } else {
+    gl_FragColor = texture2D(uTex, uv);
+  }
+}
+`;
+
+function compile(type, src) {
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(sh));
+  return sh;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, "aPos");
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ["uRes", "uT", "uS", "uTexSize", "uK"]) U[n] = gl.getUniformLocation(prog, n);
+
+const tex = gl.createTexture();
+gl.bindTexture(gl.TEXTURE_2D, tex);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+
+// during the intro build the texture re-uploads every frame, so mipmaps
+// are only generated on the final ("settled") upload
+let texVersion = 0;
+function uploadTexture(final) {
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, mosaic);
+  if (final && isGL2) {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.generateMipmap(gl.TEXTURE_2D);
+  } else {
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  }
+  texVersion++;
+}
+
+// ------------------------------------------------ mosaic rendering
+const RENDER_PUNIT = 40;          // preferred internal punit size
+const MAX_TEX = gl.getParameter(gl.MAX_TEXTURE_SIZE);
+const mosaic = document.createElement("canvas");
+let punitInt = RENDER_PUNIT;      // actual internal punit of current mosaic
+let image = null;
+let grid = null;                  // cells of the current mosaic, row-major
+
+function setFont(ctx) {
+  ctx.font = `${Math.round(punitInt * 0.9)}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+}
+
+// downscale the image and size the mosaic canvas; returns one cell per
+// pixel with its chosen emoji (nothing is drawn yet)
+function computeCells(cols) {
+  const rows = Math.max(1, Math.round(image.height / image.width * cols));
+  punitInt = Math.min(RENDER_PUNIT, Math.floor(MAX_TEX / Math.max(cols, rows)));
+
+  const off = document.createElement("canvas");
+  off.width = cols; off.height = rows;
+  const octx = off.getContext("2d", { willReadFrequently: true });
+  octx.imageSmoothingQuality = "high";
+  octx.drawImage(image, 0, 0, cols, rows);
+  const data = octx.getImageData(0, 0, cols, rows).data;
+
+  mosaic.width = cols * punitInt;
+  mosaic.height = rows * punitInt;
+
+  const cells = [];
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const i = (cy * cols + cx) * 4;
+      cells.push({ cx, cy, e: pickEmoji(data[i], data[i + 1], data[i + 2]) });
+    }
+  }
+  grid = { cells, cols, rows };
+  return grid;
+}
+
+function stampCell(ctx, cell, k) {
+  if (k <= 0) return;
+  ctx.save();
+  ctx.translate(cell.cx * punitInt + punitInt / 2,
+                cell.cy * punitInt + punitInt / 2 + punitInt * 0.05);
+  ctx.scale(k, k);
+  ctx.fillText(cell.e, 0, 0);
+  ctx.restore();
+}
+
+function renderMosaic(cols) {
+  const { cells } = computeCells(cols);
+  const ctx = mosaic.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, mosaic.width, mosaic.height);
+  setFont(ctx);
+  for (const c of cells) stampCell(ctx, c, 1);
+  uploadTexture(true);
+}
+
+// ------------------------------------------------ view, fisheye, draw loop
+const view = { s: 1, tx: 0, ty: 0 };   // CSS px: screen = tx + mosaicPx * s
+const bulge = { k: 0 };
+
+// the zoom slider represents apparent frame size — the picture's
+// on-screen width as a share of the viewport (40 = exactly viewport
+// width) — so it's independent of grid coarseness
+function applyView() {
+  if (mosaic.width) $("size").value = (mosaic.width * view.s / stage.clientWidth) * 40;
+}
+
+function bulgeImpulse(dk) {
+  bulge.k = Math.max(-0.2, Math.min(0.2, bulge.k + dk));
+  gsap.to(bulge, { k: 0, duration: 0.8, ease: "power3.out", overwrite: true });
+}
+
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  glCanvas.width = stage.clientWidth * dpr;
+  glCanvas.height = stage.clientHeight * dpr;
+  gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+}
+window.addEventListener("resize", () => {
+  resize();
+  hideText();
+  if (image) setupMap();
+});
+resize();
+
+// only touch the GPU when something actually changed — idle frames skip
+// the draw entirely
+const lastDrawn = { s: NaN, tx: NaN, ty: NaN, k: NaN, tv: -1, w: 0, h: 0 };
+function draw() {
+  if (view.s !== lastDrawn.s || view.tx !== lastDrawn.tx || view.ty !== lastDrawn.ty ||
+      bulge.k !== lastDrawn.k || texVersion !== lastDrawn.tv ||
+      glCanvas.width !== lastDrawn.w || glCanvas.height !== lastDrawn.h) {
+    const dpr = window.devicePixelRatio || 1;
+    gl.uniform2f(U.uRes, glCanvas.width, glCanvas.height);
+    gl.uniform2f(U.uT, view.tx * dpr, view.ty * dpr);
+    gl.uniform1f(U.uS, view.s * dpr);
+    gl.uniform2f(U.uTexSize, mosaic.width || 1, mosaic.height || 1);
+    gl.uniform1f(U.uK, bulge.k);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    Object.assign(lastDrawn, { s: view.s, tx: view.tx, ty: view.ty, k: bulge.k,
+                               tv: texVersion, w: glCanvas.width, h: glCanvas.height });
+    updateMap();
+  }
+  requestAnimationFrame(draw);
+}
+requestAnimationFrame(draw);
+
+function centerAt(s) {
+  return {
+    s,
+    tx: (stage.clientWidth - mosaic.width * s) / 2,
+    ty: (stage.clientHeight - mosaic.height * s) / 2,
+  };
+}
+
+// ------------------------------------------------ selectable text overlay
+// While anything moves, the WebGL canvas is the only visible renderer.
+// Once the view settles, real DOM emoji spans (visible cells only) are
+// faded in at the exact same spots so the mosaic can be selected and
+// copied. Any interaction hides them again instantly.
+const MIN_TEXT_PX = 8;      // skip the overlay when emoji are tinier than this
+const MAX_TEXT_CELLS = 15000;
+let settleTimer = 0, glHideTimer = 0;
+
+function hideText() {
+  // bring the GL frame back first (freshly drawn next rAF) so the
+  // overlay fades out over it, never over black
+  clearTimeout(glHideTimer);
+  glCanvas.style.visibility = "";
+  lastDrawn.s = NaN;
+  txt.classList.remove("on");
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(trySettle, 300);
+}
+
+function trySettle() {
+  // "intro" covers the zoom-out tween's delay, when isTweening is false
+  if (!image || building || intro || pointers.size || mapDrag ||
+      gsap.isTweening(view) || gsap.isTweening(bulge) || Math.abs(bulge.k) > 1e-4) {
+    settleTimer = setTimeout(trySettle, 300);
+    return;
+  }
+  document.body.classList.remove("unsettled");
+  if (buildText()) {
+    txt.classList.add("on");
+    // once the overlay has fully faded in, hide the GL frame beneath so
+    // the crisp DOM glyphs aren't doubled over the blurrier texture ones
+    glHideTimer = setTimeout(() => {
+      if (txt.classList.contains("on")) glCanvas.style.visibility = "hidden";
+    }, 200);
+  }
+}
+
+function buildText() {
+  const p = punitInt, cell = p * view.s;
+  if (!grid || cell < MIN_TEXT_PX) return false;
+  const c0 = Math.max(0, Math.floor(-view.tx / cell));
+  const c1 = Math.min(grid.cols - 1, Math.ceil((stage.clientWidth - view.tx) / cell));
+  const r0 = Math.max(0, Math.floor(-view.ty / cell));
+  const r1 = Math.min(grid.rows - 1, Math.ceil((stage.clientHeight - view.ty) / cell));
+  if (c1 < c0 || r1 < r0 || (c1 - c0 + 1) * (r1 - r0 + 1) > MAX_TEXT_CELLS) return false;
+
+  // same font and cell geometry as stampCell, in mosaic px; one transform
+  // maps it onto the screen exactly like the shader does
+  txt.style.font = `${Math.round(p * 0.9)}px "Apple Color Emoji", "Segoe UI Emoji", sans-serif`;
+  txt.style.transform = `translate(${view.tx}px, ${view.ty}px) scale(${view.s})`;
+  const frag = document.createDocumentFragment();
+  for (let cy = r0; cy <= r1; cy++) {
+    const row = document.createElement("div");
+    row.className = "r";
+    row.style.left = c0 * p + "px";
+    row.style.top = cy * p + "px";
+    row.style.height = row.style.lineHeight = p + "px";
+    for (let cx = c0; cx <= c1; cx++) {
+      const sp = document.createElement("span");
+      sp.style.width = p + "px";
+      sp.textContent = grid.cells[cy * grid.cols + cx].e;
+      row.appendChild(sp);
+    }
+    // real newline so a multi-row selection copies as lines, not one blob
+    row.appendChild(document.createTextNode("\n"));
+    frag.appendChild(row);
+  }
+  txt.replaceChildren(frag);
+  return true;
+}
+
+// ------------------------------------------------ mini-map (desktop)
+// Desktop drag is reserved for text selection, so panning happens here.
+// The map is a miniature of the viewport's shape; it depicts the world
+// box spanning both the image and the current view, so zooming out
+// shrinks the image thumbnail into negative space, and the view-box
+// grows to fill the map. Click or drag to center the view on a spot.
+let mapW = 0, mapH = 0, mapDrag = false;
+let mapScale = 0, mapOx = 0, mapOy = 0, mapUx = 0, mapUy = 0; // world→map
+
+function setupMap() {
+  const k = Math.min(160 / stage.clientWidth, 120 / stage.clientHeight);
+  mapW = Math.round(stage.clientWidth * k);
+  mapH = Math.round(stage.clientHeight * k);
+  map.style.width = mapW + "px"; map.style.height = mapH + "px";
+  // thumbnail rendered once at fixed resolution; updateMap re-fits it
+  const dpr = window.devicePixelRatio || 1;
+  const tk = Math.min(160 / image.width, 160 / image.height) * dpr;
+  mapimg.width = Math.round(image.width * tk);
+  mapimg.height = Math.round(image.height * tk);
+  const mctx = mapimg.getContext("2d");
+  mctx.imageSmoothingQuality = "high";
+  mctx.drawImage(image, 0, 0, mapimg.width, mapimg.height);
+  map.classList.add("show");
+  updateMap();
+}
+
+// world box = union of the image and the viewport, letterboxed into the
+// map; frozen while dragging so the content doesn't squirm under the cursor
+function mapMetrics() {
+  const vx = -view.tx / view.s, vy = -view.ty / view.s;
+  const vw = stage.clientWidth / view.s, vh = stage.clientHeight / view.s;
+  mapUx = Math.min(0, vx);
+  mapUy = Math.min(0, vy);
+  const uw = Math.max(mosaic.width, vx + vw) - mapUx;
+  const uh = Math.max(mosaic.height, vy + vh) - mapUy;
+  const pad = 6; // keep the view-box frame inset from the map edge
+  mapScale = Math.min((mapW - 2 * pad) / uw, (mapH - 2 * pad) / uh);
+  mapOx = pad + (mapW - 2 * pad - uw * mapScale) / 2;
+  mapOy = pad + (mapH - 2 * pad - uh * mapScale) / 2;
+}
+
+function updateMap() {
+  if (!mapW || !mosaic.width) return;
+  if (!mapDrag) mapMetrics();
+  mapimg.style.left = (mapOx - mapUx * mapScale) + "px";
+  mapimg.style.top = (mapOy - mapUy * mapScale) + "px";
+  mapimg.style.width = mosaic.width * mapScale + "px";
+  mapimg.style.height = mosaic.height * mapScale + "px";
+  mapbox.style.left = (mapOx + (-view.tx / view.s - mapUx) * mapScale) + "px";
+  mapbox.style.top = (mapOy + (-view.ty / view.s - mapUy) * mapScale) + "px";
+  mapbox.style.width = stage.clientWidth / view.s * mapScale + "px";
+  mapbox.style.height = stage.clientHeight / view.s * mapScale + "px";
+}
+
+function mapMove(e) {
+  const rect = map.getBoundingClientRect();
+  const wx = (e.clientX - rect.left - mapOx) / mapScale + mapUx;
+  const wy = (e.clientY - rect.top - mapOy) / mapScale + mapUy;
+  view.tx = stage.clientWidth / 2 - wx * view.s;
+  view.ty = stage.clientHeight / 2 - wy * view.s;
+  applyView();
+}
+
+map.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  killIntro();
+  hideText();
+  mapMetrics();
+  mapDrag = true;
+  map.setPointerCapture(e.pointerId);
+  mapMove(e);
+});
+map.addEventListener("pointermove", e => { if (mapDrag) mapMove(e); });
+for (const ev of ["pointerup", "pointercancel"]) {
+  map.addEventListener(ev, () => { mapDrag = false; });
+}
+
+// ------------------------------------------------ intro
+// Phase 1 (0–4s): the mosaic starts black at full zoom. The first
+// occurrence of each distinct emoji (nearest the center first, so
+// they're on screen) pops in from scale zero one at a time; then all
+// the remaining repeats flood in. Phase 2: the slow zoom-out reveal.
+const popEase = gsap.parseEase("power3.out");
+let building = false;
+let buildCells = null, buildStart = 0, settled = null;
+let intro = null;
+
+function runIntro() {
+  $("dropnote").classList.remove("show");
+  document.body.classList.add("unsettled");
+  hideText();
+  setupMap();
+  const { cells, cols, rows } = computeCells(+$("width").value);
+
+  // walk cells from the image center outward; first sighting of each
+  // distinct emoji goes to the slow reveal, the rest to the flood
+  const byDist = [...cells].sort((a, b) =>
+    Math.hypot(a.cx - cols / 2, a.cy - rows / 2) - Math.hypot(b.cx - cols / 2, b.cy - rows / 2));
+  const seen = new Set(), slow = [], flood = [];
+  for (const c of byDist) {
+    if (seen.has(c.e)) { flood.push(c); continue; }
+    seen.add(c.e);
+    slow.push(c);
+  }
+  const gap = slow.length > 1 ? (2.5 - 0.2 - 0.55) / (slow.length - 1) : 0;
+  slow.forEach((c, j) => { c.t0 = 0.2 + j * gap; c.dur = 0.55; });
+  for (const c of flood) { c.t0 = 2.5 + Math.random() * 0.95; c.dur = 0.5; }
+  buildCells = cells;
+
+  settled = document.createElement("canvas");
+  settled.width = mosaic.width; settled.height = mosaic.height;
+  const sctx = settled.getContext("2d");
+  sctx.fillStyle = "#000";
+  sctx.fillRect(0, 0, settled.width, settled.height);
+  setFont(sctx);
+
+  const ctx = mosaic.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, mosaic.width, mosaic.height);
+  setFont(ctx);
+  uploadTexture(false);
+
+  Object.assign(view, centerAt(1));
+  applyView();
+
+  building = true;
+  buildStart = performance.now();
+  lastBuildRender = -1;
+  gsap.ticker.add(buildTick);
+}
+
+let lastBuildRender = -1;
+function buildTick() {
+  const now = (performance.now() - buildStart) / 1000;
+  // 30fps is plenty for the pops and halves the per-frame canvas
+  // redraw + GPU texture upload cost
+  if (now - lastBuildRender < 1 / 30) return;
+  lastBuildRender = now;
+
+  const ctx = mosaic.getContext("2d");
+  const sctx = settled.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, mosaic.width, mosaic.height);
+  ctx.drawImage(settled, 0, 0);
+  let pending = false;
+  for (const c of buildCells) {
+    if (c.done) continue;
+    const p = (now - c.t0) / c.dur;
+    if (p >= 1) {
+      // settled was already composited this frame, so stamp the visible
+      // canvas too or the emoji vanishes for one frame
+      stampCell(sctx, c, 1);
+      stampCell(ctx, c, 1);
+      c.done = true;
+      continue;
+    }
+    pending = true;
+    if (p > 0) stampCell(ctx, c, popEase(p));
+  }
+  uploadTexture(false);
+  if (!pending) {
+    gsap.ticker.remove(buildTick);
+    building = false;
+    uploadTexture(true);
+    startZoomOut();
+  }
+}
+
+function startZoomOut() {
+  const fit = Math.min(stage.clientWidth / mosaic.width, stage.clientHeight / mosaic.height);
+  // land ~20% further out than the exact fit/punit-13 frame
+  const target = centerAt(Math.min(13 / punitInt, fit) * 0.8);
+  // one motion: the fisheye is driven by the zoom itself, tracking the
+  // zoom's velocity and fully released by the time it lands
+  intro = gsap.to(view, {
+    ...target,
+    duration: 1.3, delay: 1, ease: "expo.out",
+    onUpdate() {
+      // velocity peaks at the start with an out-ease, so the fisheye
+      // hits immediately and releases as the zoom decelerates
+      bulge.k = -0.2 * (1 - this.progress()) * Math.sin(Math.PI * Math.min(1, this.progress() * 2));
+      applyView();
+    },
+    onComplete: () => {
+      bulge.k = 0; intro = null;
+      $("dropnote").classList.add("show");
+    },
+  });
+}
+
+function killIntro() {
+  if (building) {
+    gsap.ticker.remove(buildTick);
+    building = false;
+    renderMosaic(+$("width").value);
+  }
+  if (intro) {
+    intro.kill();
+    intro = null;
+  }
+  // interrupting the intro settles the image too, so the note still shows
+  if (image) $("dropnote").classList.add("show");
+  gsap.to(bulge, { k: 0, duration: 0.5, ease: "power2.out", overwrite: true });
+}
+
+// ------------------------------------------------ interaction
+function zoomAbout(mx, my, s2) {
+  const k = s2 / view.s;
+  view.tx = mx - (mx - view.tx) * k;
+  view.ty = my - (my - view.ty) * k;
+  view.s = s2;
+  applyView();
+}
+
+const minS = () => 2 / punitInt, maxS = () => 120 / punitInt;
+
+stage.addEventListener("wheel", e => {
+  e.preventDefault();
+  killIntro();
+  hideText();
+  const s2 = Math.min(maxS(), Math.max(minS(), view.s * Math.exp(-e.deltaY * 0.0015)));
+  bulgeImpulse((s2 / view.s - 1) * 0.9);
+  zoomAbout(e.clientX, e.clientY, s2);
+}, { passive: false });
+
+// touch-only pointer handling: one finger pans, two fingers pinch to
+// zoom about the pinch midpoint. Mouse drags are left alone so they
+// select text on the settled overlay; desktop pans via the mini-map.
+const pointers = new Map();
+stage.addEventListener("pointerdown", e => {
+  if (e.pointerType !== "touch") return;
+  killIntro();
+  hideText();
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  stage.setPointerCapture(e.pointerId);
+});
+stage.addEventListener("pointermove", e => {
+  if (!pointers.has(e.pointerId)) return;
+  const prev = pointers.get(e.pointerId);
+  const cur = { x: e.clientX, y: e.clientY };
+  if (pointers.size === 1) {
+    view.tx += cur.x - prev.x;
+    view.ty += cur.y - prev.y;
+    pointers.set(e.pointerId, cur);
+    applyView();
+    return;
+  }
+  // pinch: pair this pointer's movement with the other pointer's position
+  const other = [...pointers.entries()].find(([id]) => id !== e.pointerId);
+  if (!other) return;
+  const o = other[1];
+  const oldMid = { x: (prev.x + o.x) / 2, y: (prev.y + o.y) / 2 };
+  const newMid = { x: (cur.x + o.x) / 2, y: (cur.y + o.y) / 2 };
+  const oldDist = Math.hypot(prev.x - o.x, prev.y - o.y);
+  const newDist = Math.hypot(cur.x - o.x, cur.y - o.y);
+  pointers.set(e.pointerId, cur);
+  view.tx += newMid.x - oldMid.x;
+  view.ty += newMid.y - oldMid.y;
+  if (oldDist > 0 && newDist > 0) {
+    const s2 = Math.min(maxS(), Math.max(minS(), view.s * newDist / oldDist));
+    zoomAbout(newMid.x, newMid.y, s2);
+  } else {
+    applyView();
+  }
+});
+for (const ev of ["pointerup", "pointercancel"]) {
+  stage.addEventListener(ev, e => pointers.delete(e.pointerId));
+}
+
+// ------------------------------------------------ controls
+$("size").addEventListener("input", () => {
+  killIntro();
+  hideText();
+  const s2 = Math.min(maxS(), Math.max(minS(),
+    (+$("size").value / 40) * stage.clientWidth / mosaic.width));
+  bulgeImpulse((s2 / view.s - 1) * 0.7);
+  const k = s2 / view.s;
+  gsap.to(view, {
+    s: s2,
+    tx: stage.clientWidth / 2 - (stage.clientWidth / 2 - view.tx) * k,
+    ty: stage.clientHeight / 2 - (stage.clientHeight / 2 - view.ty) * k,
+    duration: 0.25, ease: "power2.out", overwrite: true,
+  });
+});
+
+$("width").addEventListener("input", () => {
+  if (!image) return;
+  killIntro();
+  hideText();
+  // emoji count changes the grid resolution only — the picture must keep
+  // its on-screen size (zoom alone controls that), and the point at the
+  // screen center stays put
+  const prevScreenW = mosaic.width * view.s;
+  const cx = stage.clientWidth / 2, cy = stage.clientHeight / 2;
+  const relX = (cx - view.tx) / (mosaic.width * view.s);
+  const relY = (cy - view.ty) / (mosaic.height * view.s);
+  renderMosaic(+$("width").value);
+  view.s = prevScreenW / mosaic.width;
+  view.tx = cx - relX * mosaic.width * view.s;
+  view.ty = cy - relY * mosaic.height * view.s;
+  applyView();
+});
+
+// any image loaded by the user remosaics at the current settings
+function loadImageFile(file) {
+  if (!file || !file.type.startsWith("image/")) return;
+  killIntro();
+  const url = URL.createObjectURL(file);
+  const dropped = new Image();
+  dropped.onload = () => {
+    URL.revokeObjectURL(url);
+    image = dropped;
+    runIntro();
+  };
+  dropped.src = url;
+}
+
+// desktop: drag & drop
+for (const ev of ["dragover", "dragenter"]) {
+  window.addEventListener(ev, e => e.preventDefault());
+}
+window.addEventListener("drop", e => {
+  e.preventDefault();
+  loadImageFile(e.dataTransfer.files[0]);
+});
+
+// touch: the drop note doubles as a photo picker (CSS enables its
+// pointer-events on coarse pointers only)
+$("dropnote").addEventListener("click", () => $("file").click());
+$("file").addEventListener("change", e => {
+  loadImageFile(e.target.files[0]);
+  e.target.value = "";
+});
+
+const img = new Image();
+img.onload = () => {
+  image = img;
+  runIntro();
+};
+img.src = "imagination.png?t=" + Date.now();
+</script>
+</body>
+</html>
